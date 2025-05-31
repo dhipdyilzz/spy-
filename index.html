@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Who's the Spy - Multiplayer Online</title>
+  <style>
+    body {
+      margin:0; padding:20px;
+      font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+      background:#121212; color:#eee; text-align:center;
+    }
+    input, button, select {
+      font-size: 1.2em;
+      padding: 10px;
+      margin: 5px;
+      border-radius: 8px;
+      border:none;
+    }
+    button {
+      background: #2a9d8f; color: #fff;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    button:hover:not(:disabled) {
+      background: #21867a;
+    }
+    .hidden {display:none;}
+    #playerList div {
+      margin: 3px 0;
+      padding: 5px;
+      border-radius: 5px;
+      background: #264653;
+    }
+    #word {
+      font-size: 3em;
+      margin: 30px 0 10px;
+      color: #e76f51;
+    }
+    #timer {
+      font-size: 2em;
+      margin: 10px 0;
+      color: #f4a261;
+    }
+    #voteOptions div {
+      margin: 8px 0;
+    }
+    #results div {
+      margin: 5px 0;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Who's the Spy - Multiplayer</h1>
+
+  <div id="setup">
+    <input id="playerName" placeholder="Masukkan nama" autocomplete="off" /><br />
+    <input id="roomCode" placeholder="Kode room (misal: abc123)" autocomplete="off" /><br />
+    <button id="btnCreate">Buat Room</button>
+    <button id="btnJoin">Gabung Room</button>
+  </div>
+
+  <div id="lobby" class="hidden">
+    <h2>Room: <span id="roomName"></span></h2>
+    <h3>Pemain:</h3>
+    <div id="playerList"></div>
+    <button id="btnStartGame">Mulai Game</button>
+  </div>
+
+  <div id="game" class="hidden">
+    <h2>Kata Kamu:</h2>
+    <div id="word">Menunggu kata...</div>
+    <div id="timer"></div>
+    <button id="btnStartVoting" class="hidden">Mulai Voting</button>
+  </div>
+
+  <div id="voting" class="hidden">
+    <h2>Voting - Pilih yang kamu curigai</h2>
+    <div id="voteOptions"></div>
+    <button id="btnSubmitVote" disabled>Submit Vote</button>
+    <div id="timerVoting"></div>
+  </div>
+
+  <div id="results" class="hidden">
+    <h2>Hasil Voting</h2>
+    <div id="resultsList"></div>
+    <button id="btnPlayAgain">Main Lagi</button>
+  </div>
+
+  <!-- Firebase -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+
+  <script>
+    // Ganti dengan konfigurasi Firebase kamu sendiri
+    const firebaseConfig = {
+      apiKey: "MASUKKAN_API_KEY_MU",
+      authDomain: "xxxx.firebaseapp.com",
+      databaseURL: "https://xxxx.firebaseio.com",
+      projectId: "xxxx",
+      storageBucket: "xxxx.appspot.com",
+      messagingSenderId: "xxxx",
+      appId: "xxxx"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let playerName = "";
+    let roomCode = "";
+    let isSpy = false;
+    let gameStarted = false;
+    let votingStarted = false;
+    let voteChoice = null;
+    let timerInterval, votingTimerInterval;
+    const DISCUSSION_TIME = 60; // detik
+    const VOTING_TIME = 30; // detik
+
+    const elSetup = document.getElementById("setup");
+    const elLobby = document.getElementById("lobby");
+    const elGame = document.getElementById("game");
+    const elVoting = document.getElementById("voting");
+    const elResults = document.getElementById("results");
+
+    const elPlayerList = document.getElementById("playerList");
+    const elRoomName = document.getElementById("roomName");
+    const elWord = document.getElementById("word");
+    const elTimer = document.getElementById("timer");
+    const elVoteOptions = document.getElementById("voteOptions");
+    const elTimerVoting = document.getElementById("timerVoting");
+    const elResultsList = document.getElementById("resultsList");
+
+    document.getElementById("btnCreate").onclick = createRoom;
+    document.getElementById("btnJoin").onclick = joinRoom;
+    document.getElementById("btnStartGame").onclick = startGame;
+    document.getElementById("btnStartVoting").onclick = startVoting;
+    document.getElementById("btnSubmitVote").onclick = submitVote;
+    document.getElementById("btnPlayAgain").onclick = resetGame;
+
+    function createRoom() {
+      playerName = document.getElementById("playerName").value.trim();
+      roomCode = document.getElementById("roomCode").value.trim().toLowerCase();
+
+      if (!playerName || !roomCode) return alert("Isi semua kolom!");
+
+      const roomRef = db.ref("rooms/" + roomCode);
+
+      roomRef.get().then(snap => {
+        if (snap.exists()) {
+          alert("Room sudah ada, pilih kode lain atau gabung room ini.");
+        } else {
+          roomRef.set({
+            started: false,
+            discussionStarted: false,
+            votingStarted: false,
+            votes: {},
+            players: { [playerName]: true },
+            words: {}
+          }).then(() => {
+            enterLobby();
+          });
+        }
+      });
+    }
+
+    function joinRoom() {
+      playerName = document.getElementById("playerName").value.trim();
+      roomCode = document.getElementById("roomCode").value.trim().toLowerCase();
+      if (!playerName || !roomCode) return alert("Isi semua kolom!");
+
+      const playersRef = db.ref("rooms/" + roomCode + "/players");
+      playersRef.get().then(snap => {
+        if (!snap.exists()) {
+          alert("Room tidak ditemukan!");
+        } else {
+          const players = snap.val();
+          if (players[playerName]) {
+            alert("Nama sudah digunakan di room ini!");
+            return;
+          }
+          playersRef.update({ [playerName]: true }).then(() => {
+            enterLobby();
+          });
+        }
+      });
+    }
+
+    function enterLobby() {
+      elSetup.classList.add("hidden");
+      elLobby.classList.remove("hidden");
+      elRoomName.textContent = roomCode;
+
+      const playersRef = db.ref("rooms/" + roomCode + "/players");
+      playersRef.on("value", snap => {
+        const players = snap.val() || {};
+        let html = "";
+        for (const p in players) {
+          html += `<div>${p}</div>`;
+        }
+        elPlayerList.innerHTML = html;
+      });
+
+      const startedRef = db.ref("rooms/" + roomCode + "/started");
+      startedRef.on("value", snap => {
+        gameStarted = snap.val() === true;
+        if (gameStarted) {
+          elLobby.classList.add("hidden");
+          elGame.classList.remove("hidden");
+          listenForWord();
+          listenForDiscussionStart();
+          listenForVotingStart();
+          listenForVotesResult();
+        }
+      });
+    }
+
+    function startGame() {
+      const words = ["Pantai", "Gunung", "Pasar", "Sekolah", "Kantor", "Stadion", "Restoran"];
+      const secretWord = words[Math.floor(Math.random() * words.length)];
+
+      // Ambil list pemain dan tentukan spy
+      db.ref("rooms/" + roomCode + "/players").get().then(snap => {
+        const playerNames = Object.keys(snap.val());
+        if (playerNames.length < 3) {
+          alert("Minimal 3 pemain untuk mulai game!");
+          return;
+        }
+        const spyIndex = Math.floor(Math.random() * playerNames.length);
+        const updates = {};
+        playerNames.forEach((name, i) => {
+          updates["words/" + name] = (i === spyIndex) ? "???" : secretWord;
+        });
+        db.ref("rooms/" + roomCode).update({
+          started: true,
+          discussionStarted: true,
+          votingStarted: false,
+          votes: {},
+          ...updates
+        }).then(() => {
+          // Start discussion timer
+          startDiscussionTimer(DISCUSSION_TIME);
+        });
+      });
+    }
+
+    function listenForWord() {
+      const wordRef = db.ref("rooms/" + roomCode + "/words/" + playerName);
+      wordRef.on("value", snap => {
+        const val = snap.val();
+        if (val) {
+          elWord.textContent = val;
+          isSpy = (val === "???");
+        }
+      });
+    }
+
+    function startDiscussionTimer(seconds) {
+      let timeLeft = seconds;
+      elTimer.textContent = "Diskusi: " + timeLeft + " detik";
+      elGame.querySelector("#btnStartVoting").classList.add("hidden");
+      clearInterval(timerInterval);
+
+      timerInterval = setInterval(() => {
+        timeLeft--;
+        elTimer.textContent = "Diskusi: " + timeLeft + " detik";
+        if (timeLeft <= 0) {
+          clearInterval(timerInterval);
+          elTimer.textContent = "Waktu diskusi selesai!";
+          db.ref("rooms/" + roomCode).update({
+            discussionStarted: false,
+            votingStarted: true
+          });
+        }
+      }, 1000);
+    }
+
+    function listenForDiscussionStart() {
+      const discussionRef = db.ref("rooms/" + roomCode + "/discussionStarted");
+      discussionRef.on("value", snap => {
+        if (snap.val()) {
+          elGame.classList.remove("hidden");
+          elVoting.classList.add("hidden");
+          elResults.classList.add("hidden");
+          startDiscussionTimer(DISCUSSION_TIME);
+        }
+      });
+    }
+
+    function listenForVotingStart() {
+      const votingRef = db.ref("rooms/" + roomCode + "/votingStarted");
+      votingRef.on("value", snap => {
+        votingStarted = snap.val() === true;
+        if (votingStarted) {
+          elGame.classList.add("hidden");
+          elVoting.classList.remove("hidden");
+          elResults.classList.add("hidden");
+          showVoteOptions();
+          startVotingTimer(VOTING_TIME);
+        }
+      });
+    }
+
+    function showVoteOptions() {
+      const playersRef = db.ref("rooms/" + roomCode + "/players");
+      playersRef.get().then(snap => {
+        const players = snap.val();
+        if (!players) return;
+
+        let html = "";
+        for (const p in players) {
+          if (p !== playerName) {
+            html += `<div>
+              <input type="radio" name="vote" value="${p}" id="vote-${p}" />
+              <label for="vote-${p}">${p}</label>
+            </div>`;
+          }
+        }
+        elVoteOptions.innerHTML = html;
+
+        voteChoice = null;
+        document.getElementById("btnSubmitVote").disabled = true;
+
+        const radios = elVoteOptions.querySelectorAll("input[type=radio]");
+        radios.forEach(radio => {
+          radio.addEventListener("change", () => {
+            voteChoice = radio.value;
+            document.getElementById("btnSubmitVote").disabled = false;
+          });
+        });
+      });
+    }
+
+    function startVotingTimer(seconds) {
+      let timeLeft = seconds;
+      elTimerVoting.textContent = "Voting: " + timeLeft + " detik";
+      clearInterval(votingTimerInterval);
+
+      votingTimerInterval = setInterval(() => {
+        timeLeft--;
+        elTimerVoting.textContent = "Voting: " + timeLeft + " detik";
+        if (timeLeft <= 0) {
+          clearInterval(votingTimerInterval);
+          if (!voteChoice) {
+            alert("Kamu tidak memilih, vote otomatis batal.");
+          }
+          submitVote(true);
+        }
+      }, 1000);
+    }
+
+    function submitVote(auto = false) {
+      if (!voteChoice && !auto) {
+        alert("Pilih dulu siapa yang kamu curigai!");
+        return;
+      }
+      if (voteChoice) {
+        db.ref(`rooms/${roomCode}/votes/${playerName}`).set(voteChoice);
+      } else {
+        // Tidak memilih, vote batal - bisa diabaikan
+        db.ref(`rooms/${roomCode}/votes/${playerName}`).set(null);
+      }
+      document.getElementById("btnSubmitVote").disabled = true;
+      elVoteOptions.querySelectorAll("input").forEach(i => i.disabled = true);
+    }
+
+    function listenForVotesResult() {
+      const votesRef = db.ref("rooms/" + roomCode + "/votes");
+      votesRef.on("value", snap => {
+        const votes = snap.val() || {};
+        db.ref("rooms/" + roomCode + "/players").get().then(playersSnap => {
+          const players = playersSnap.val() || {};
+          const playerCount = Object.keys(players).length;
+
+          // Jika semua pemain sudah voting (atau skip)
+          if (Object.keys(votes).length === playerCount) {
+            showResults(votes, players);
+          }
+        });
+      });
+    }
+
+    function showResults(votes, players) {
+      elGame.classList.add("hidden");
+      elVoting.classList.add("hidden");
+      elResults.classList.remove("hidden");
+
+      // Hitung vote per pemain
+      const voteCount = {};
+      for (const voter in votes) {
+        const voted = votes[voter];
+        if (voted) {
+          voteCount[voted] = (voteCount[voted] || 0) + 1;
+        }
+      }
+
+      // Cari pemain yang mendapat vote terbanyak
+      let maxVotes = 0;
+      let mostVoted = [];
+      for (const p in voteCount) {
+        if (voteCount[p] > maxVotes) {
+          maxVotes = voteCount[p];
+          mostVoted = [p];
+        } else if (voteCount[p] === maxVotes) {
+          mostVoted.push(p);
+        }
+      }
+
+      let resultHTML = "<h3>Hasil Voting:</h3>";
+      for (const p in players) {
+        const votesGot = voteCount[p] || 0;
+        const marked = mostVoted.includes(p) ? " (terpilih)" : "";
+        resultHTML += `<div>${p} : ${votesGot} suara${marked}</div>`;
+      }
+
+      // Tentukan pemenang
+      // Dapat kata rahasia dan spy dari db
+      db.ref("rooms/" + roomCode + "/words").get().then(wordsSnap => {
+        const words = wordsSnap.val() || {};
+        let spyName = null;
+        let secretWord = null;
+        for (const p in words) {
+          if (words[p] === "???") spyName = p;
+          else secretWord = words[p];
+        }
+
+        if (mostVoted.length === 1 && mostVoted[0] === spyName) {
+          resultHTML += `<h2>Spy tertangkap! Semua menang! 🥳</h2>`;
+        } else {
+          resultHTML += `<h2>Spy lolos! Spy (${spyName}) menang! 😈</h2>`;
+          resultHTML += `<h3>Kata rahasia: ${secretWord}</h3>`;
+        }
+
+        elResultsList.innerHTML = resultHTML;
+      });
+    }
+
+    function resetGame() {
+      // Reset data room
+      db.ref("rooms/" + roomCode).remove().then(() => {
+        window.location.reload();
+      });
+    }
+  </script>
+</body>
+</html>
